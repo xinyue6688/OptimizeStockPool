@@ -29,7 +29,11 @@ class DataProcess(WindData):
         :return: 指数成分股数据表 (pd.DataFrame)
         """
         index_member = self.get_data.get_index_con(index_code)
-        index_member.drop(columns=['S_INFO_WINDCODE'], inplace=True)
+        if 'S_INFO_WINDCODE' in index_member.columns:
+            index_member.drop(columns=['S_INFO_WINDCODE'], inplace=True)
+        else:
+            index_member.drop(columns=['F_INFO_WINDCODE'], inplace = True)
+
         index_member.rename(columns={'S_CON_WINDCODE': 'S_INFO_WINDCODE'}, inplace=True)
 
         index_member['S_CON_INDATE'] = pd.to_datetime(index_member['S_CON_INDATE'].astype(str))
