@@ -175,6 +175,20 @@ class WindData(ConnectDatabase):
         df = connection.get_data()
         return df
 
+    def get_sngstock_price(self, fields_sql, stock_code: str):
+        '''获取行情数据'''
+        table = 'ASHAREEODPRICES'
+
+        sql = f'''SELECT {fields_sql}               
+                FROM {table}
+                WHERE (TRADE_DT BETWEEN '{self.start_date}' AND '{self.end_date}') AND (S_INFO_WINDCODE = '{stock_code}')
+            '''
+
+        connection = ConnectDatabase(sql)
+        df = connection.get_data()
+        df.sort_values(by='TRADE_DT', inplace=True)
+        df.reset_index(drop=True, inplace=True)
+        return df
 
 
 
