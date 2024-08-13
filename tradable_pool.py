@@ -13,7 +13,6 @@ from scipy.stats import zscore
 from decimal import Decimal
 import seaborn as sns
 
-from Utils.get_wind_data import WindData
 from Utils.data_clean import DataProcess
 from Utils.return_metrics import MetricsCalculator
 from Utils.factor_test import FactorDecileAnalysis
@@ -22,7 +21,7 @@ start_time = '20100101'
 end_time = datetime.now().strftime('%Y%m%d')
 data = DataProcess(start_time, end_time)
 # 获取全市场行情
-price = data.get_prices('S_INFO_WINDCODE,TRADE_DT,S_DQ_PRECLOSE,S_DQ_OPEN,S_DQ_CLOSE,S_DQ_TRADESTATUS,S_DQ_LIMIT,S_DQ_STOPPING')
+price = data.get_prices('S_INFO_WINDCODE,TRADE_DT,S_DQ_PRECLOSE,S_DQ_OPEN,S_DQ_CLOSE,S_DQ_TRADESTATUS,S_DQ_LIMIT,S_DQ_STOPPING, S_DQ_AMOUNT')
 print(price.head())
 price['TRADE_DT'] = pd.to_datetime(price['TRADE_DT'])
 price[['S_DQ_PRECLOSE','S_DQ_OPEN','S_DQ_CLOSE','S_DQ_LIMIT','S_DQ_STOPPING']] = price[['S_DQ_PRECLOSE','S_DQ_OPEN','S_DQ_CLOSE','S_DQ_LIMIT','S_DQ_STOPPING']].astype(float)
@@ -47,7 +46,6 @@ print(all_market_rt.head())
 
 #### 次新股 ####
 list_info = ['S_INFO_WINDCODE',
-             'S_INFO_LISTBOARD',
              'S_INFO_LISTDATE',
              'S_INFO_DELISTDATE']
 list_data = data.get_stock_dsp(list_info)
@@ -71,17 +69,19 @@ for name in filter_relist['S_INFO_WINDCODE'].unique():
     price_listinfo.loc[(price_listinfo['S_INFO_WINDCODE'] == name)& (price_listinfo['TRADE_DT'] >= new_trade_date), 'S_INFO_LISTDATE'] = new_trade_date
 
 price_listinfo['SUBNEW'] = price_listinfo.apply(DetermineNewStatus, axis=1)
-price_subnew_revised = price_listinfo.drop(columns=['S_INFO_LISTDATE', 'S_INFO_DELISTDATE', 'S_INFO_LISTBOARD'])
+price_subnew_revised = price_listinfo.drop(columns=['S_INFO_LISTDATE', 'S_INFO_DELISTDATE'])
 print('-----SUBNEW MARKED-----')
 
 #### 停牌 ####
-price_suspend = price_subnew_revised.copy()
+sus_df = data.get_suspend_info('S_INFO_WINDCODE, S_DQ_SUSPENDDATE, S_DQ_RESUMPDATE')
+sus_df['S_DQ_SUSPENDDATE'] = pd.to_datetime(sus_df['S_DQ_SUSPENDDATE'])
+price_suspend = pd.merge(price_subnew_revised, sus_df, left_on = ['S_INFO_WINDCODE', 'TRADE_DT'], right_on = ['S_INFO_WINDCODE', 'S_DQ_SUSPENDDATE'], how='left')
 price_suspend['SUSPEND'] = 0
-mask_filter_suspend = price_suspend['S_DQ_TRADESTATUS'] == '停牌'
+mask_filter_suspend = price_suspend['S_DQ_SUSPENDDATE'].notna()
 price_suspend.loc[mask_filter_suspend, 'SUSPEND'] = 1
 price_suspend['PAST_10_SUSPEND'] = price_suspend.groupby('S_INFO_WINDCODE')['SUSPEND'].rolling(window=10, min_periods=1).sum().reset_index(0, drop=True)
 price_suspend['SUSPEND'] = (price_suspend['PAST_10_SUSPEND'] > 0).astype(int)
-price_suspend = price_suspend.drop(columns=['PAST_10_SUSPEND'])
+price_suspend = price_suspend.drop(columns=['PAST_10_SUSPEND', 'S_DQ_SUSPENDDATE', 'S_DQ_RESUMPDATE'])
 print('-----SUSPEND MARKED-----')
 
 #### ST ####
@@ -115,19 +115,17 @@ print('-----ST MARKED-----')
 #### 净资产、流动性、市值 ####
 indicator_info = 'S_INFO_WINDCODE,TRADE_DT,NET_ASSETS_TODAY,S_DQ_TURN,S_VAL_MV'
 indicator_data = data.get_indicator(indicator_info)
-amount_info = 'S_INFO_WINDCODE, TRADE_DT, S_DQ_AMOUNT'
-amount_data = data.get_prices(amount_info)
-indicator_data = pd.merge(indicator_data, amount_data, on=['S_INFO_WINDCODE', 'TRADE_DT'], how='left')
 indicator_data['TRADE_DT'] = pd.to_datetime(indicator_data['TRADE_DT'])
 price_indicators = pd.merge(price_st, indicator_data, on=['S_INFO_WINDCODE','TRADE_DT'], how='left')
-
+#rows_with_na = price_indicators[price_indicators[['NET_ASSETS_TODAY', 'S_DQ_TURN', 'S_VAL_MV', 'S_DQ_AMOUNT']].isna().any(axis=1)]
+#print(rows_with_na)
 group_by_code = price_indicators.groupby('S_INFO_WINDCODE') # 向后填充
 def fillna_forward(group):
     group['NET_ASSETS_TODAY'] = group['NET_ASSETS_TODAY'].fillna(method='ffill')
     return group
 
 price_indicators = group_by_code.apply(fillna_forward).reset_index(drop = True)
-price_indicators.dropna(inplace=True)
+
 asset_floor = 0
 liquid_floor = 1000000 / 1000  # 单位为千元 (100万元)
 mv_floor = 300000000 / 10000    # 单位为万元 (3亿元)
@@ -148,8 +146,14 @@ print('FILTER CONDITIONS ALL MARKED')
 
 # Filter stocks that qualifies the exclusion requirements
 data_all = price_indicators.copy()
+
+problem_list = ['000403.SZ', '000620.SZ', '000981.SZ'] # 借壳上市股票
+for stock in problem_list:
+    idx = data_all[data_all['S_INFO_WINDCODE'] == stock].index[:252]
+    data_all.loc[idx, 'SUBNEW'] = 1
+
 # Filter stocks that qualifies the exclusion requirements
-exclude_mask = (data_all['SUBNEW'] == 1) |\
+exclude_mask = (data_all['SUBNEW'] != 0) |\
                (data_all['SUSPEND'] == 1) |\
                (data_all['ST_STATUS'] != 'Normal') |\
                (data_all['NEG_ASSET'] == 1) |\
@@ -160,7 +164,28 @@ my_pool = data_all[~exclude_mask]
 my_pool.sort_values(by = ['TRADE_DT'], ascending = True, inplace = True)
 tradable_components = my_pool[['TRADE_DT', 'S_INFO_WINDCODE']].reset_index(drop = True)
 tradable_components.to_parquet('Data/tradable_components.parquet', engine = 'pyarrow', index = False)
-tradable_components.to_csv('Data/tradable_components.csv', index = False)
+
+conditions = ['SUBNEW', 'SUSPEND', 'ST_STATUS', 'NEG_ASSET', 'MINI_MV', 'LOW_LIQUIDITY']
+results = {'TRADE_DT': data_all['TRADE_DT'].unique().to_numpy()}
+grouped_by_day = data_all.groupby('TRADE_DT')
+
+for condition in conditions:
+    results[condition] = np.zeros(len(results['TRADE_DT']))
+
+    if condition == 'ST_STATUS':
+        daily_num = grouped_by_day.apply(lambda x: (x[condition] != 'Normal').sum())
+    elif condition == 'SUBNEW':
+        daily_num = grouped_by_day.apply(lambda x: (x[condition] != 0).sum())
+    else:
+        daily_num = grouped_by_day.apply(lambda x: (x[condition] == 1).sum())
+
+    results[condition] = daily_num
+
+results['ALL MARKET'] = data_all.groupby(['TRADE_DT'])['S_INFO_WINDCODE'].nunique().values
+results['STOCKS REMAINING'] = my_pool.groupby(['TRADE_DT'])['S_INFO_WINDCODE'].nunique().values
+
+daily_filter_stats = pd.DataFrame(results).reset_index(drop=True)
+daily_filter_stats.to_excel('Data/逐日股票池剔除数量表(修正版).xlsx', index=False)
 
 my_pool_rt = my_pool.groupby('TRADE_DT')['RETURN_NXT'].mean().reset_index()
 my_pool_rt.rename(columns={'RETURN_NXT': 'RETURN_MYPOOL'}, inplace=True)
@@ -210,6 +235,7 @@ all_market_performance.print_metrics()
 my_pool_liquidity_test = my_pool[((my_pool['S_DQ_OPEN'] != my_pool['S_DQ_LIMIT']) & (my_pool['S_DQ_OPEN'] != my_pool['S_DQ_STOPPING']))]
 my_pool_liquidity_test.reset_index(inplace=True, drop=True)
 my_pool_liquidity_test_ind = data.assign_industry(my_pool_liquidity_test)
+my_pool_liquidity_test_ind['S_DQ_TURN'] = my_pool_liquidity_test_ind['S_DQ_TURN'].astype(float)
 my_pool_liquidity_test_ind['S_DQ_TURN_winsorized'] =  my_pool_liquidity_test_ind.groupby('TRADE_DT')['S_DQ_TURN'].transform(lambda x: winsorize(x, limits=[0.05, 0.05]))
 my_pool_liquidity_test_ind['S_DQ_TURN_norm'] = my_pool_liquidity_test_ind.groupby('TRADE_DT')['S_DQ_TURN_winsorized'].transform(lambda x: zscore(x))
 
@@ -226,6 +252,7 @@ all_market_liquidity_test = data_all[((data_all['S_DQ_OPEN'] != data_all['S_DQ_L
                                      (data_all['S_DQ_TRADESTATUS'] != '停牌')]
 all_market_liquidity_test.reset_index(inplace=True, drop=True)
 all_market_liquidity_test_ind = data.assign_industry(all_market_liquidity_test)
+all_market_liquidity_test_ind['S_DQ_TURN'] = all_market_liquidity_test_ind['S_DQ_TURN'].astype(float)
 all_market_liquidity_test_ind['S_DQ_TURN_winsorized'] =  all_market_liquidity_test_ind.groupby('TRADE_DT')['S_DQ_TURN'].transform(lambda x: winsorize(x, limits=[0.05, 0.05]))
 all_market_liquidity_test_ind['S_DQ_TURN_norm'] = all_market_liquidity_test_ind.groupby('TRADE_DT')['S_DQ_TURN_winsorized'].transform(lambda x: zscore(x))
 

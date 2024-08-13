@@ -113,11 +113,15 @@ class DataProcess(WindData):
         df['const'] = 1.0
 
         # Convert Decimal to float if necessary
-        df['S_VAL_MV'] = df['S_VAL_MV'].apply(lambda x: float(x) if isinstance(x, Decimal) else x)
+        df['S_VAL_MV'] = df['S_VAL_MV'].astype(float)
 
+        # Add log of market value
         df['lnMV'] = np.log(df['S_VAL_MV'])
-        df.dropna(inplace=True)
 
+        # Drop rows with NaN values in necessary columns
+        df.dropna(subset=['lnMV', 'S_DQ_TURN_norm'], inplace=True)
+
+        # Prepare data for regression
         X = df[['const', 'lnMV']]
         y = df['S_DQ_TURN_norm']
 
@@ -125,16 +129,21 @@ class DataProcess(WindData):
         X = X.apply(pd.to_numeric, errors='coerce')
         y = pd.to_numeric(y, errors='coerce')
 
-        X.dropna(inplace=True)
-        y = y[X.index]
+        # Align X and y
+        X = X.loc[y.notnull()]
+        y = y.loc[y.notnull()]
 
-        if X.isnull().values.any() or y.isnull().values.any():
-            raise ValueError("Data contains NaN values after conversion to numeric types")
+        if X.empty or y.empty:
+            return df  # Return original df if regression cannot be performed
 
         model = sm.OLS(y, X)
         results = model.fit()
-        df['turnover'] = results.resid
-        df.drop(['S_DQ_TURN_norm', 'const'], axis=1, inplace=True)
+
+        # Add residuals as 'turnover' column
+        df.loc[y.index, 'turnover'] = results.resid
+
+        # Drop temporary columns
+        df.drop(['const', 'lnMV'], axis=1, inplace=True)
 
         return df
 

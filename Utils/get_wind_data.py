@@ -190,7 +190,15 @@ class WindData(ConnectDatabase):
         df.reset_index(drop=True, inplace=True)
         return df
 
+    def get_suspend_info(self, fields_sql):
+        table = 'ASHARETRADINGSUSPENSION'
 
+        sql = f'''SELECT {fields_sql}               
+                              FROM {table}'''
+
+        connection = ConnectDatabase(sql)
+        df = connection.get_data()
+        return df
 
 if __name__ == '__main__':
     start_time = '20100101'
