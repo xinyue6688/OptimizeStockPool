@@ -80,3 +80,35 @@ class DataPerStock(ConnectDatabase):
         connection = ConnectDatabase(sql)
         df = connection.get_data()
         return df
+
+    def major_event(self):
+        sql = f'''
+            SELECT S_INFO_WINDCODE, S_EVENT_CATEGORYCODE, S_EVENT_ANNCEDATE, S_EVENT_HAPDATE,
+            S_EVENT_EXPDATE, S_EVENT_CONTENT
+            FROM ASHAREMAJOREVENT
+            WHERE (S_INFO_WINDCODE = '{self.stock_code}' AND S_EVENT_CATEGORYCODE = 204007001)
+                OR (S_INFO_WINDCODE = '{self.stock_code}' AND S_EVENT_CATEGORYCODE = 204007005)
+        '''
+
+        connection = ConnectDatabase(sql)
+        df = connection.get_data()
+        return df
+
+    def bond_rt(self):
+        sql = f'''
+            SELECT TRADE_DT, S_DQ_CLOSE
+            FROM CGBBENCHMARK
+            WHERE S_INFO_WINDCODE = '{self.stock_code}' 
+        '''
+
+        connection = ConnectDatabase(sql)
+        df = connection.get_data()
+        df.sort_values(by='TRADE_DT', inplace=True)
+        df.reset_index(drop=True, inplace=True)
+        df.rename(columns={'S_DQ_CLOSE': f'{self.stock_code}'}, inplace=True)
+        return df
+
+if __name__ == '__main__':
+    single_data = DataPerStock('20071214', '2024722', 'GZHY.WI')
+    brt = single_data.bond_rt()
+    print(brt)

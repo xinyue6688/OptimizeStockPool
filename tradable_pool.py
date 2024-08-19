@@ -63,7 +63,8 @@ def DetermineNewStatus(row):
 
 price_listinfo['SUBNEW'] = price_listinfo.apply(DetermineNewStatus, axis=1)
 
-filter_relist = price_listinfo[(price_listinfo['S_DQ_TRADESTATUS'] == 'N') & (price_listinfo['SUBNEW'] == 0)] # 修正重新上市的股票
+filter_relist = price_listinfo[((price_listinfo['S_DQ_TRADESTATUS'] == 'N') & (price_listinfo['SUBNEW'] == 0)) |
+((price_listinfo['S_DQ_LIMIT'] == 99999) & (price_listinfo['SUBNEW'] == 0))] # 修正重新上市的股票
 for name in filter_relist['S_INFO_WINDCODE'].unique():
     new_trade_date = filter_relist[filter_relist['S_INFO_WINDCODE'] == name]['TRADE_DT'].values[0]
     price_listinfo.loc[(price_listinfo['S_INFO_WINDCODE'] == name)& (price_listinfo['TRADE_DT'] >= new_trade_date), 'S_INFO_LISTDATE'] = new_trade_date
@@ -146,12 +147,12 @@ print('FILTER CONDITIONS ALL MARKED')
 
 # Filter stocks that qualifies the exclusion requirements
 data_all = price_indicators.copy()
-
+'''
 problem_list = ['000403.SZ', '000620.SZ', '000981.SZ'] # 借壳上市股票
 for stock in problem_list:
     idx = data_all[data_all['S_INFO_WINDCODE'] == stock].index[:252]
     data_all.loc[idx, 'SUBNEW'] = 1
-
+'''
 # Filter stocks that qualifies the exclusion requirements
 exclude_mask = (data_all['SUBNEW'] != 0) |\
                (data_all['SUSPEND'] == 1) |\

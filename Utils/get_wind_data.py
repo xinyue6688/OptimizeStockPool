@@ -200,6 +200,18 @@ class WindData(ConnectDatabase):
         df = connection.get_data()
         return df
 
+    def get_reginv_info(self):
+
+        sql = f'''
+         SELECT S_INFO_WINDCODE, SUR_REASONS, STR_ANNDATE, STR_DATE
+         FROM ASHAREREGINV
+         WHERE STR_ANNDATE BETWEEN '{self.start_date}' AND '{self.end_date}'
+        '''
+
+        connection = ConnectDatabase(sql)
+        df = connection.get_data()
+        return df
+
 if __name__ == '__main__':
     start_time = '20100101'
     end_time = '20100105'
