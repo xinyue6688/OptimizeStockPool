@@ -164,7 +164,7 @@ exclude_mask = (data_all['SUBNEW'] != 0) |\
 my_pool = data_all[~exclude_mask]
 my_pool.sort_values(by = ['TRADE_DT'], ascending = True, inplace = True)
 tradable_components = my_pool[['TRADE_DT', 'S_INFO_WINDCODE']].reset_index(drop = True)
-tradable_components.to_parquet('Data/tradable_components.parquet', engine = 'pyarrow', index = False)
+tradable_components.to_parquet('/Volumes/quanyi4g/data/index/pool/tradable_components.parquet', engine = 'pyarrow', index = False)
 
 conditions = ['SUBNEW', 'SUSPEND', 'ST_STATUS', 'NEG_ASSET', 'MINI_MV', 'LOW_LIQUIDITY']
 results = {'TRADE_DT': data_all['TRADE_DT'].unique().to_numpy()}

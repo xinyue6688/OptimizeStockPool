@@ -13,7 +13,9 @@ import statsmodels.api as sm
 import matplotlib.pyplot as plt
 
 from Utils.data_clean import DataProcess
+from Utils.barra import Barra_Beta
 from Utils.get_wind_data_per_stock import DataPerStock
+from Utils.get_wind_data import WindData
 
 start_time = '20081222'
 end_time = datetime.now().strftime('%Y%m%d')
@@ -40,136 +42,86 @@ my_ew_index = my_ew_index_components.groupby('TRADE_DT')['EWI_RETURN'].mean().re
 print('万得全A剔除北交所：')
 print(my_ew_index.head())
 
-market_returns = pd.merge(csi_all[['TRADE_DT', 'CSI_RETURN']], my_ew_index[['TRADE_DT', 'EWI_RETURN']], on='TRADE_DT')
+beta = Barra_Beta(start_time, end_time)
+rf_df = beta.risk_free_rate()
+rf_df.to_parquet('/Volumes/quanyi4g/factor/day_frequency/fundamental/RiskFree/risk_free.parquet')
+fixed_df = beta.prepare_rm_n_rf(csi_all, my_ew_index)
 
-print(market_returns.head())
-market_returns = market_returns[['TRADE_DT', 'EWI_RETURN', 'CSI_RETURN']]
-#market_returns.to_parquet('Data/beta.parquet')
-
-current_start_time = datetime.strptime(start_time, "%Y%m%d")
-
-bond_china_yield_combined_df = pd.DataFrame()
-
-while current_start_time.strftime("%Y%m%d") < end_time:
-    current_end_time = min(current_start_time + timedelta(days=365), datetime.strptime(end_time, "%Y%m%d"))
-
-    bond_china_yield_df = ak.bond_china_yield(
-        start_date=current_start_time.strftime("%Y%m%d"),
-        end_date=current_end_time.strftime("%Y%m%d")
-    )
-
-    bond_china_yield_filtered_df = bond_china_yield_df[
-        (bond_china_yield_df['曲线名称'] == '中债国债收益率曲线')
-    ][['日期', '10年']]
-
-    bond_china_yield_combined_df = pd.concat([bond_china_yield_combined_df, bond_china_yield_filtered_df])
-
-    current_start_time = current_end_time + timedelta(days=1)
-
-bond_china_yield_combined_df.reset_index(drop=True, inplace=True)
-rf = bond_china_yield_combined_df.rename(columns={'日期': 'TRADE_DT',
-                                                  '10年': 'RF_RETURN_ANN'})
-rf['RF_RETURN_ANN'] = rf['RF_RETURN_ANN']/100
-rf.to_excel('Data/risk_free.xlsx')
-rf['RF_RETURN'] = (1 + rf['RF_RETURN_ANN']) ** (1/252) - 1
-rf['TRADE_DT'] = pd.to_datetime(rf['TRADE_DT'])
-rf.drop(columns=['RF_RETURN_ANN'], inplace=True)
-fixed_df = pd.merge(rf, market_returns, on='TRADE_DT', how = 'left') # 格式：日期、市值加权beta、等权beta
-
-# 观测beta暴露的窗口期为252天，半衰期为63天
-window_size = 252
-half_life = 63
-lambda_ = np.exp(-np.log(2) / half_life)
-t = np.arange(1, window_size + 1)
-weights = lambda_ ** t
-weights = weights[::-1]
-
-# 获取中国市场的交易日历
-cn_cal = mcal.get_calendar('SSE')  # 'SSE'代表上海证券交易所
-
-grouped = a_share_nobj.groupby('S_INFO_WINDCODE')
-length = len(grouped)
+# 立案调查事件
+data = WindData(start_time, end_time)
+reg_inv_df = data.get_reginv_info()
+reg_inv_df['STR_ANNDATE'] = pd.to_datetime(reg_inv_df['STR_ANNDATE'])
+reg_inv_df['STR_DATE'] = pd.to_datetime(reg_inv_df['STR_DATE'])
+reg_inv_df['TRADE_DT'] = np.minimum(reg_inv_df['STR_DATE'], reg_inv_df['STR_ANNDATE'])
+reg_inv_df = reg_inv_df[~reg_inv_df['S_INFO_WINDCODE'].str.endswith('BJ')]
+stock_reg_inv = reg_inv_df['S_INFO_WINDCODE'].unique() # 找到发生过事件的标的
+all_stock_reg_evt = pd.DataFrame()
+length = len(stock_reg_inv)
 count = 0
-problem_list = []
-pool_alpha_df = pd.DataFrame()
-
-for name, group in grouped:
-    # 每只成分股的数据从2010/01/04的前252个交易日（2008/12/22）取到今天
-    # 可能会出现数据长度不满252天的情况
-    stock_data = group.copy()
-    if len(stock_data) < 10:
-        print(f'Stock {name} is listed for less than 10 days, not enough data to calculate market exposure')
-        problem_list.append(name)
-        count += 1
-        continue
-
-    stock_data[['S_DQ_PRECLOSE', 'S_DQ_CLOSE']] = stock_data[['S_DQ_PRECLOSE', 'S_DQ_CLOSE']].astype(float)
-    stock_data['STOCK_RETURN'] = stock_data['S_DQ_CLOSE'] / stock_data['S_DQ_PRECLOSE'] - 1
-    stock_data['TRADE_DT'] = pd.to_datetime(stock_data['TRADE_DT'])
-    stock_data = stock_data.merge(fixed_df, on='TRADE_DT', how='left')
-
-    # 计算成分股市场暴露
-    beta_results = []
-    matching_index = stock_data[stock_data['TRADE_DT'] == '2010-01-04'].index
-    if not matching_index.empty:
-        start_index = matching_index[0]
-    else:
-        start_index = 10
-    for index in range(start_index, len(group['TRADE_DT'])):
-        window_data = stock_data.iloc[max(0, index - window_size): index].dropna()
-        t = stock_data.loc[index, 'TRADE_DT']
-        # 准备回归数据
-        reg_data = window_data[['S_INFO_WINDCODE', 'STOCK_RETURN', 'RF_RETURN', 'EWI_RETURN', 'CSI_RETURN']].copy()
-        reg_data['y'] = reg_data['STOCK_RETURN'] - reg_data['RF_RETURN']
-        reg_data['const'] = 1  # Add a constant term
-
-        weights_adj = weights[-len(reg_data):] if len(reg_data) != len(weights) else weights
-
-        try:
-            EW_model = sm.WLS(reg_data['y'], reg_data[['const', 'EWI_RETURN']], weights=weights_adj).fit()
-            EW_beta_t = EW_model.params['EWI_RETURN']
-        except Exception as e:
-            problem_list.append(name)
-            print(f"EW_model error: {e} at iteration {index}")
-            continue
-
-        try:
-            CSI_model = sm.WLS(reg_data['y'], reg_data[['const', 'CSI_RETURN']], weights=weights_adj).fit()
-            CSI_beta_t = CSI_model.params['CSI_RETURN']
-        except Exception as e:
-            problem_list.append(name)
-            print(f"CSI_model error: {e} at iteration {index}")
-            continue
-
-        beta_results.append({
-            'TRADE_DT': t,
-            'EW_Beta': EW_beta_t,
-            'CSI_Beta': CSI_beta_t
-        })
-
-    if name in problem_list:
-        print(f'Skipping {name} due to previous errors.')
-        continue
-
-    beta_df = pd.DataFrame(beta_results)
-    beta_df['TRADE_DT'] = pd.to_datetime(beta_df['TRADE_DT'])
-
-    try:
-        beta_df = beta_df.merge(stock_data, on='TRADE_DT', how='left')
-    except KeyError as e:
-        print(f"Merge error for stock {name}: {e}")
-        continue
-
-    beta_df['EW_Alpha'] = beta_df['STOCK_RETURN'] - beta_df['RF_RETURN'] - beta_df['EWI_RETURN'] * beta_df['EW_Beta']
-    beta_df['CSI_Alpha'] = beta_df['STOCK_RETURN'] - beta_df['RF_RETURN'] - beta_df['CSI_RETURN'] * beta_df['CSI_Beta']
-    beta_df = beta_df[['TRADE_DT', 'EW_Beta', 'CSI_Beta', 'EW_Alpha', 'CSI_Alpha']]
-    beta_df.to_parquet(f'Component_beta/{name.replace(".", "_")}_beta.parquet')
-
-    beta_df['S_INFO_WINDCODE'] = name
-    pool_alpha_df = pd.concat([pool_alpha_df, beta_df]).reset_index(drop=True)
+for stock_code in stock_reg_inv:
+    beta_alpha_df = beta.beta_exposure(stock_code)
+    all_stock_reg_evt = pd.concat([all_stock_reg_evt, beta_alpha_df])
     count += 1
-    print(f'{name} DONE, COMPLETED WRITING {count}, {length - count} LEFT')
+    print(f'Finished {count}, stock code {stock_code}, {length - count} left')
 
-print(pool_alpha_df.head())
+all_stock_reg_evt = pd.merge(all_stock_reg_evt, reg_inv_df, how = 'left', on = ['TRADE_DT', 'S_INFO_WINDCODE'])
+all_stock_reg_evt['if_reg_inv'] = all_stock_reg_evt[['SUR_REASONS', 'STR_ANNDATE', 'STR_DATE']].notna().any(axis=1).astype(int)
+grouped = all_stock_reg_evt.groupby('S_INFO_WINDCODE')
+reg_inv_ew_effect_df = pd.DataFrame()
 
+for stock, group in grouped:
+    group = group.reset_index(drop=True)
+    event_indices = group.index[group['if_reg_inv'] == 1]
+    if event_indices.empty:
+        continue
+    for i in range(len(event_indices)):
+        start_idx = max(event_indices[i] - 30, 0)
+        end_idx = min(event_indices[i] + 30, len(group) - 1)
 
+        timerange_data = group.loc[start_idx:end_idx, ['EW_Alpha', 'CSI_Alpha']].reset_index(drop=True)
+        timerange_data.columns = [f'EW_Alpha_{stock}_{i+1}', f'CSI_Alpha_{stock}_{i+1}']
+        reg_inv_ew_effect_df = pd.concat([reg_inv_ew_effect_df, timerange_data], axis = 1)
+
+ew_alpha_columns = reg_inv_ew_effect_df.filter(like='EW_Alpha_')
+reg_inv_ew_effect_df['EW_Alpha_Avg'] = ew_alpha_columns.mean(axis=1)
+reg_inv_ew_effect_df['Cumulative_Alpha'] = (1+reg_inv_ew_effect_df['EW_Alpha_Avg']).cumprod() - 1
+time_index = range(-30, 31)
+
+fig, ax1 = plt.subplots(figsize=(10, 6))
+ax1.bar(time_index, reg_inv_ew_effect_df['EW_Alpha_Avg'], color='red', edgecolor='black', alpha=0.7, label='EW_Alpha Average')
+ax1.set_xlabel('Time (Relative to Event)')
+ax1.set_ylabel('EW_Alpha Average', color='black')
+ax1.tick_params(axis='y', labelcolor='black')
+
+ax2 = ax1.twinx()
+ax2.plot(time_index, reg_inv_ew_effect_df['Cumulative_Alpha'], color='purple', label='Cumulative Alpha', linewidth=2)
+ax2.set_ylabel('Cumulative Alpha', color='black')
+ax2.tick_params(axis='y', labelcolor='black')
+
+ax1.set_title('Regulation Investigation')
+ax1.legend(loc='upper left')
+ax2.legend(loc='upper right')
+
+plt.show()
+
+csi_alpha_columns = reg_inv_ew_effect_df.filter(like='CSI_Alpha_')
+reg_inv_ew_effect_df['CSI_Alpha_Avg'] = csi_alpha_columns.mean(axis=1)
+reg_inv_ew_effect_df['CSI_Cumulative_Alpha'] = (1+reg_inv_ew_effect_df['CSI_Alpha_Avg']).cumprod() - 1
+
+fig, ax1 = plt.subplots(figsize=(10, 6))
+
+ax1.bar(time_index, reg_inv_ew_effect_df['CSI_Alpha_Avg'], color='red', edgecolor='black', alpha=0.7, label='CSI_Alpha Average')
+ax1.set_xlabel('Time (Relative to Event)')
+ax1.set_ylabel('CSI_Alpha Average', color='black')
+ax1.tick_params(axis='y', labelcolor='black')
+
+ax2 = ax1.twinx()
+ax2.plot(time_index, reg_inv_ew_effect_df['CSI_Cumulative_Alpha'], color='purple', label='Cumulative CSI Alpha', linewidth=2)
+ax2.set_ylabel('Cumulative CSI Alpha', color='black')
+ax2.tick_params(axis='y', labelcolor='black')
+
+ax1.set_title('Regulation Investigation')
+ax1.legend(loc='upper left')
+ax2.legend(loc='upper right')
+
+plt.show()
