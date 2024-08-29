@@ -6,7 +6,14 @@
 
 刚性优化提升股票池的可交易性，考虑以下六个影响股票交易的特征：次新股、停牌情况、ST情况、总资产、总市值、流动性，剔除池中影响交易条件的股票
 
-## 2.[Event Diagnosis](https://github.com/xinyue6688/ZLT-Project-2/blob/main/main.py)
+## 2.[Event Diagnosis 事件分析](https://github.com/xinyue6688/ZLT-Project-2/blob/main/main.py)
 - Measure market beta exposure of stocks, and corresponsive alphas
 
+
+测算个股的市场beta暴露以及对应的alpha
+
+
 - Study how negative financial events effect performance of stock alpha, and verify those events as indicators of stock selection
+
+
+研究负向财务事件对于个股alpha的影响，判断事件能否成为有效的选股指标
